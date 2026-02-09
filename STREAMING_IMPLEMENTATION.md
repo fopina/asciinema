@@ -8,6 +8,8 @@ This implementation removes the memory bottleneck in the `play` command by enabl
 
 ### File: `src/player.rs`
 
+Changed `emit_session_events()` to use `spawn_blocking` instead of `spawn`:
+
 **Before:**
 ```rust
 fn emit_session_events(...) -> Result<mpsc::Receiver<Result<Event>>> {
@@ -48,6 +50,29 @@ fn emit_session_events(...) -> Result<mpsc::Receiver<Result<Event>>> {
 }
 ```
 
+### Files: `src/asciicast.rs`, `src/asciicast/v2.rs`, `src/asciicast/v3.rs`
+
+Added `Send` trait bounds to enable thread-safe iterator usage:
+
+```rust
+// Before
+pub struct Asciicast<'a> {
+    pub events: Box<dyn Iterator<Item = Result<Event>> + 'a>,
+}
+
+// After
+pub struct Asciicast<'a> {
+    pub events: Box<dyn Iterator<Item = Result<Event>> + Send + 'a>,
+}
+```
+
+Similar changes were made to:
+- `Parser::parse()` methods in v2 and v3
+- `limit_idle_time()` and `accelerate()` functions
+- `open()` function
+
+These bounds are required because `spawn_blocking` moves the iterator to a different thread.
+
 ## Technical Details
 
 ### Why the Original Used `.collect()`
@@ -58,11 +83,12 @@ The original implementation used `.collect()` because:
 2. **Async refactor**: When the code was converted from synchronous to async (commit `caf0cf3`), the spawned async task needed owned data
 3. **Quick solution**: Collecting into a `Vec` made all data owned and `'static`, solving the lifetime issue
 
-### Why `spawn_blocking` Fixes This
+### Why `spawn_blocking` + `Send` Fixes This
 
 1. **Blocking I/O belongs in blocking threads**: File reading/parsing is blocking anyway, so `spawn_blocking` is the correct choice
-2. **No lifetime restrictions**: Blocking tasks can work with non-`'static` iterators since they run on a dedicated thread pool
-3. **True streaming**: Events are now read and parsed one at a time from disk
+2. **Thread safety with Send**: The `Send` bound ensures the iterator can be safely moved between threads
+3. **No collection needed**: With proper trait bounds, we can stream directly without collecting into a Vec
+4. **True streaming**: Events are now read and parsed one at a time from disk
 
 ## Benefits
 
